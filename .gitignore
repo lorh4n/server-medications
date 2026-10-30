@@ -31,3 +31,6 @@ staticfiles/
 *.sqlite3
 .env.*
 !.env.example
+
+# Local catalog downloads
+files/

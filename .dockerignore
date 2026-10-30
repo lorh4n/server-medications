@@ -9,3 +9,6 @@ __pycache__
 *.sqlite3
 dbms
 lembramed/staticfiles
+
+# Local catalog downloads
+files/

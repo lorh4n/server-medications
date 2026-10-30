@@ -14,7 +14,7 @@ class RegisterSerializer(serializers.Serializer):
     birth      = serializers.DateField(required=False, allow_null=True)
 
     def validate_email(self, value):
-        if User.objects.filter(email=value).exists():
+        if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("Email já cadastrado.")
         return value
 
@@ -41,7 +41,9 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
-        user = authenticate(username=data.get('email'), password=data.get('password'))
+        candidates = User.objects.filter(email__iexact=data.get('email'))
+        account = candidates.first() if candidates.count() == 1 else None
+        user = authenticate(username=account.username, password=data.get('password')) if account else None
         if not user:
             raise serializers.ValidationError("Email ou senha incorretos.")
         if not user.is_active:

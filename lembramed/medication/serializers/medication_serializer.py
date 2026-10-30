@@ -1,7 +1,9 @@
+from django.db import transaction
 from rest_framework import serializers
+from rest_framework.validators import UniqueValidator
 from ..models import (
     Medication, Medication_Name, Active_Ingredient,
-    Brand, Therapeutic_Class, Category, Company
+    Brand, Therapeutic_Class, Category, Company, Leaflet
 )
 
 class MedicationNameSerializer(serializers.ModelSerializer):
@@ -17,15 +19,42 @@ class ActiveIngredientSerializer(serializers.ModelSerializer):
 
     def to_internal_value(self, data):
         if isinstance(data, str):
-            return {'active_ingredient': data}
+            data = {'active_ingredient': data}
         return super().to_internal_value(data)
 
-class MedicationSerializer(serializers.ModelSerializer):
-    leaflet = serializers.SerializerMethodField()
+class CatalogLeafletSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Leaflet
+        fields = [
+            'indicacoes_para_uso', 'funcionamento_medicamento', 'quando_nao_usar',
+            'conhecimento_previo_necessario', 'como_guardar_medicamento',
+            'como_usar_medicamento', 'esqueceu_medicamento', 'efeitos_colaterais',
+            'quantidade_a_mais',
+        ]
+        extra_kwargs = {field: {'required': False, 'allow_blank': True} for field in fields}
 
-    def get_leaflet(self, obj):
-        from .leaflet_serializer import LeafletSerializer
-        return LeafletSerializer(obj.leaflet).data if hasattr(obj, "leaflet") else None
+
+class MedicationSerializer(serializers.ModelSerializer):
+    leaflet = CatalogLeafletSerializer(required=False)
+    medication_id = serializers.IntegerField(
+        min_value=1, max_value=2147483647,
+        validators=[UniqueValidator(queryset=Medication.objects.all(), message='Este registro já está cadastrado.')],
+    )
+    # Keep large regulatory numbers exact when consumed by JavaScript.
+    process_num = serializers.DecimalField(max_digits=19, decimal_places=0, min_value=1,
+        max_value=9223372036854775807, coerce_to_string=True)
+
+    def validate(self, attrs):
+        instance = self.instance
+        if instance and 'medication_id' in attrs and attrs['medication_id'] != instance.pk:
+            raise serializers.ValidationError({'medication_id': 'O registro não pode ser alterado.'})
+        name = attrs.get('name', instance.name if instance else None)
+        brand = attrs.get('brand', instance.brand if instance else None)
+        if not name and not brand:
+            raise serializers.ValidationError({'name': 'Informe o nome ou nome comercial.'})
+        if (not instance or 'active_ingredients' in attrs) and not attrs.get('active_ingredients'):
+            raise serializers.ValidationError({'active_ingredients': 'Informe pelo menos um princípio ativo.'})
+        return attrs
 
     name = serializers.CharField(required=False, allow_null=True)
     category = serializers.CharField(required=False, allow_null=True)
@@ -51,7 +80,9 @@ class MedicationSerializer(serializers.ModelSerializer):
 
         return obj
     
+    @transaction.atomic
     def create(self, validated_data):
+        leaflet = validated_data.pop('leaflet', None)
         active_ingredients_data = validated_data.pop('active_ingredients', [])
         
         name_val = validated_data.pop('name', None)
@@ -72,9 +103,13 @@ class MedicationSerializer(serializers.ModelSerializer):
             if ai_name:
                 ai_obj, _ = Active_Ingredient.objects.get_or_create(active_ingredient=ai_name.strip())
                 medication.active_ingredients.add(ai_obj)
+        if leaflet is not None:
+            Leaflet.objects.create(medication=medication, **leaflet)
         return medication
-    
+
+    @transaction.atomic
     def update(self, instance, validated_data):
+        leaflet = validated_data.pop('leaflet', None)
         active_ingredients_data = validated_data.pop('active_ingredients', None)
         if 'name' in validated_data:
             instance.name = self._resolve_relation(Medication_Name, 'name', validated_data.pop('name'))
@@ -98,8 +133,11 @@ class MedicationSerializer(serializers.ModelSerializer):
                 if ai_name:
                     ai_obj, _ = Active_Ingredient.objects.get_or_create(active_ingredient=ai_name.strip())
                     instance.active_ingredients.add(ai_obj)
+        if leaflet is not None:
+            Leaflet.objects.update_or_create(medication=instance, defaults=leaflet)
+            instance._state.fields_cache.pop('leaflet', None)
         return instance
-    
+
     def to_representation(self, instance):
         """Format the output string representations for GET responses."""
 
